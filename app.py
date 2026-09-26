@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime, timezone
 
-APP_VERSION = '3.1.0'
+APP_VERSION = '3.1.1'
 
 def local_timestamp(value):
     """Convert SQLite's UTC CURRENT_TIMESTAMP text into the computer's local time."""
@@ -70,7 +70,7 @@ for k,v in DEFAULTS.items():
         st.session_state[k]=float(raw)
     except (TypeError,ValueError):
         st.session_state[k]=float(v)
-for k,v in {'analysis':None,'drawing_text':'','drawing_info':None,'uploaded_name':None,'optimization':None,'process_comparison':None,'annotated_drawing':None,'cad_info':None,'cad_name':None,'active_project_id':None,'material_choice':'Aluminium 6061','process_choice':'AUTO SELECT','project_name':'Demo Bracket','component_name':'CNC Machined Bracket','quantity_value':50,'nav':'New Analysis','pending_nav':None}.items(): st.session_state.setdefault(k,v)
+for k,v in {'analysis':None,'drawing_text':'','drawing_info':None,'uploaded_name':None,'optimization':None,'process_comparison':None,'annotated_drawing':None,'cad_info':None,'cad_name':None,'active_project_id':None,'material_choice':'Aluminium 6061','process_choice':'AUTO SELECT','project_name':'Demo Bracket','component_name':'CNC Machined Bracket','quantity_value':50,'nav':'New Analysis','pending_nav':None,'demo_mode':False,'demo_upload_used':False,'demo_upload_type':None}.items(): st.session_state.setdefault(k,v)
 
 # ---------- Authentication ----------
 def auth_screen():
@@ -95,13 +95,15 @@ def auth_screen():
             if st.button('Sign in to workspace', type='primary', use_container_width=True):
                 user=authenticate(email.strip(),password)
                 if user:
-                    st.session_state.user=user; st.rerun()
+                    st.session_state.user=user; st.session_state.demo_mode=False; st.rerun()
                 else:
                     st.error('We could not sign you in. Check your email and password.')
             st.markdown('<div class="mf-auth-divider"><span>or</span></div>',unsafe_allow_html=True)
             if st.button('Continue with demo workspace', use_container_width=True):
-                st.session_state.user=ensure_demo_user(); st.rerun()
-            st.caption('Demo mode is for evaluation only.')
+                st.session_state.user={'id':0,'name':'MechForge Demo','email':'demo@mechforge.ai','demo':True}
+                st.session_state.demo_mode=True
+                st.rerun()
+            st.caption('Demo access includes one engineering-file upload per browser session. Create an account for continued use.')
     with right:
         with st.container(border=True):
             st.markdown('<div class="mf-kicker">New workspace</div><h2>Create your account</h2><p class="mf-muted">Start a personal engineering workspace for MechForge AI.</p>',unsafe_allow_html=True)
@@ -124,6 +126,20 @@ if 'user' not in st.session_state:
     auth_screen(); st.stop()
 
 user=st.session_state.user
+is_demo=bool(st.session_state.get('demo_mode') and user.get('demo',False))
+demo_locked=is_demo and bool(st.session_state.get('demo_upload_used'))
+
+def demo_gate_notice():
+    if not is_demo:
+        return
+    if demo_locked:
+        st.error('Demo limit reached — your one free engineering-file upload has been used. Create an account to continue with new drawings and CAD models.')
+        if st.button('Create account to continue', type='primary', use_container_width=True, key='demo_create_account'):
+            st.session_state.pop('user',None)
+            st.session_state.demo_mode=False
+            st.rerun()
+    else:
+        st.info('Demo mode: upload **one PDF/image OR one STEP/STP/STL file**. After the first successful upload, new file uploads are locked until you create an account.')
 
 # Navigation requested by a button is applied BEFORE the radio widget is instantiated.
 # Streamlit forbids changing a widget's keyed session_state value after creation.
@@ -166,9 +182,11 @@ def load_project(pid):
 with st.sidebar:
     st.markdown('<div class="mf-kicker">Engineering workspace</div><h2 style="margin:.2rem 0 .1rem">⚙️ MechForge</h2>',unsafe_allow_html=True)
     st.markdown(f'<span class="mf-status"><span class="mf-dot"></span>{user["name"]}</span>',unsafe_allow_html=True)
+    if is_demo:
+        st.caption('🧪 One-upload demo • account required after trial')
     nav=st.radio('Workspace',['New Analysis','Dashboard','CAD Studio','AI Assistant','Suppliers','Reports & History','Settings'], key='nav')
     st.divider()
-    projects=list_projects(user['id'])
+    projects=[] if is_demo else list_projects(user['id'])
     if projects:
         labels=['New project']+[f"{p['name']} (#{p['id']})" for p in projects]
         selected=st.selectbox('Project',labels,index=0)
@@ -204,23 +222,26 @@ if nav=='New Analysis':
     quantity=st.number_input('Production quantity',1,100000,key='quantity_value',step=1,help='Used for batch and per-unit cost estimation.')
 
     st.markdown('<div class="mf-section">02 · Engineering data</div>',unsafe_allow_html=True)
+    demo_gate_notice()
     st.caption('Upload the source drawing and/or a CAD model. MechForge keeps extracted drawing values, CAD geometry and manual inputs distinguishable.')
     up1,up2=st.columns(2,gap='large')
     with up1:
         with st.container(border=True):
             st.markdown('**2D drawing**')
             st.caption('PDF, PNG or JPG · dimensions, tolerances, finish and manufacturing notes')
-            uploaded=st.file_uploader('Upload drawing',type=['pdf','png','jpg','jpeg'],key='drawing_upload',label_visibility='collapsed')
+            uploaded=st.file_uploader('Upload drawing',type=['pdf','png','jpg','jpeg'],key='drawing_upload',label_visibility='collapsed',disabled=demo_locked or (is_demo and st.session_state.get('demo_upload_type')=='cad'))
     with up2:
         with st.container(border=True):
             st.markdown('**3D CAD model**')
             st.caption('STEP, STP or STL · geometry, topology and dimensional envelope')
-            cad_uploaded=st.file_uploader('Upload CAD model',type=['step','stp','stl'],key='cad_upload',label_visibility='collapsed')
+            cad_uploaded=st.file_uploader('Upload CAD model',type=['step','stp','stl'],key='cad_upload',label_visibility='collapsed',disabled=demo_locked or (is_demo and st.session_state.get('demo_upload_type')=='drawing'))
 
-    if uploaded is not None and uploaded.name!=st.session_state.uploaded_name:
+    if uploaded is not None and uploaded.name!=st.session_state.uploaded_name and not demo_locked:
         text,method=extract_drawing_text(uploaded.name,uploaded.getvalue()); info=analyze_drawing_text(text)
         st.session_state.uploaded_name=uploaded.name; st.session_state.drawing_text=text; st.session_state.drawing_info=info
         reset_analysis_state()
+        if is_demo:
+            st.session_state.demo_upload_used=True; st.session_state.demo_upload_type='drawing'
         detected=info.get('detected',{})
         for key in DEFAULTS:
             if key in detected: st.session_state[key]=float(detected[key])
@@ -230,9 +251,12 @@ if nav=='New Analysis':
         # Rerun so the detected selections are applied before the selectbox widgets are created.
         if dm in materials or dp in PROCESS_OPTIONS:
             st.rerun()
-    if cad_uploaded is not None and cad_uploaded.name!=st.session_state.cad_name:
+    if cad_uploaded is not None and cad_uploaded.name!=st.session_state.cad_name and not demo_locked and not (is_demo and st.session_state.get('demo_upload_used')):
         try:
-            st.session_state.cad_info=analyze_cad_file(cad_uploaded.name,cad_uploaded.getvalue()); st.session_state.cad_name=cad_uploaded.name; reset_analysis_state(); st.success(f'CAD parsed successfully: {cad_uploaded.name}')
+            st.session_state.cad_info=analyze_cad_file(cad_uploaded.name,cad_uploaded.getvalue()); st.session_state.cad_name=cad_uploaded.name; reset_analysis_state()
+            if is_demo:
+                st.session_state.demo_upload_used=True; st.session_state.demo_upload_type='cad'
+            st.success(f'CAD parsed successfully: {cad_uploaded.name}')
         except Exception as exc: st.error(f'CAD parsing failed: {exc}')
 
     if st.session_state.drawing_info:
@@ -272,9 +296,12 @@ if nav=='New Analysis':
     st.caption('Run the deterministic DFM engine after reviewing the extracted and manually entered values.')
     if st.button('🔍 Run DFM Analysis',type='primary',use_container_width=True):
         data=project_data(); st.session_state.analysis=analyze_design(data); reset_analysis_state(); st.session_state.analysis=analyze_design(data)
-        pid=upsert_project(user['id'],project,component,material,process,int(quantity),st.session_state.active_project_id)
-        st.session_state.active_project_id=pid
-        save_analysis(user['id'],pid,project,st.session_state.analysis)
+        if is_demo:
+            st.session_state.active_project_id=None
+        else:
+            pid=upsert_project(user['id'],project,component,material,process,int(quantity),st.session_state.active_project_id)
+            st.session_state.active_project_id=pid
+            save_analysis(user['id'],pid,project,st.session_state.analysis)
 
     a=st.session_state.analysis
     if a:
@@ -343,7 +370,7 @@ if nav=='New Analysis':
 # ---------- Dashboard ----------
 elif nav=='Dashboard':
     st.markdown('<div class="mf-page-title"><div><div class="mf-kicker">ENGINEERING COMMAND CENTER</div><h2>Dashboard</h2><p>Monitor manufacturability, project activity and production decisions from one workspace.</p></div></div>',unsafe_allow_html=True)
-    projects=list_projects(user['id']); analyses=list_analyses(user['id']); quotes=list_quotes(user['id'])
+    projects=[] if is_demo else list_projects(user['id']); analyses=[] if is_demo else list_analyses(user['id']); quotes=[] if is_demo else list_quotes(user['id'])
     cloud_ai=bool(os.getenv('OPENAI_API_KEY'))
     scores=[x['payload'].get('score') for x in analyses if isinstance(x.get('payload',{}).get('score'),(int,float))]
     avg=(sum(scores)/len(scores)) if scores else 0
@@ -427,16 +454,20 @@ elif nav=='CAD Studio':
     with left:
         with st.container(border=True):
             st.markdown('**Upload model**')
+            if is_demo:
+                demo_gate_notice()
             st.caption('Supported formats: STEP, STP and STL. Geometry is analyzed locally by the CAD parser.')
-            cad=st.file_uploader('CAD model',type=['step','stp','stl'],key='cad_studio_upload',label_visibility='collapsed')
+            cad=st.file_uploader('CAD model',type=['step','stp','stl'],key='cad_studio_upload',label_visibility='collapsed',disabled=demo_locked)
             if st.session_state.cad_name:
                 st.caption(f"Current model: **{st.session_state.cad_name}**")
             st.info('Geometry-level analysis does not infer functional intent, GD&T, datum schemes or manufacturing notes that are not encoded in the model.')
-    if cad:
+    if cad and not demo_locked:
         try:
             with st.spinner('Analyzing CAD geometry…'):
                 ci=analyze_cad_file(cad.name,cad.getvalue())
             st.session_state.cad_info=ci; st.session_state.cad_name=cad.name
+            if is_demo:
+                st.session_state.demo_upload_used=True; st.session_state.demo_upload_type='cad'
         except Exception as exc:
             st.error(f'Could not parse model: {exc}')
             ci=None
@@ -477,6 +508,8 @@ elif nav=='CAD Studio':
 
 # ---------- AI Assistant ----------
 elif nav=='AI Assistant':
+    if is_demo:
+        st.info('Demo mode includes one file upload for evaluation. Create an account to keep project history and continue using the full workspace.')
     st.markdown('<div class="mf-page-title"><div><div class="mf-kicker">MECHFORGE COPILOT</div><h2>AI Engineering Assistant</h2><p>General-purpose AI with project-aware engineering context when available.</p></div></div>',unsafe_allow_html=True)
     a=st.session_state.analysis or {}; c=st.session_state.cad_info or {}; pid=st.session_state.active_project_id
     key_configured=bool(os.getenv('OPENAI_API_KEY'))
@@ -508,23 +541,29 @@ elif nav=='AI Assistant':
     if st.session_state.get('ai_prefill'):
         q=st.session_state.pop('ai_prefill')
     if q:
-        add_chat(user['id'],pid,'user',q)
+        if not is_demo:
+            add_chat(user['id'],pid,'user',q)
         with st.spinner('MechForge AI is thinking…'):
             reply,mode=ai_answer(q,a,c,history)
-        add_chat(user['id'],pid,'assistant',reply)
+        if not is_demo:
+            add_chat(user['id'],pid,'assistant',reply)
         with st.chat_message('user'): st.write(q)
         with st.chat_message('assistant'): st.write(reply)
         st.caption(f'Assistant mode: {mode}')
 
 # ---------- Suppliers ----------
 elif nav=='Suppliers':
+    if is_demo:
+        st.info('Supplier management and saved quotations are available after account creation.')
     st.markdown('<div class="mf-page-title"><div><div class="mf-kicker">PROCUREMENT WORKSPACE</div><h2>Suppliers & Quotes</h2><p>Manage internal supplier profiles and compare transparent manufacturing estimates.</p></div></div>',unsafe_allow_html=True)
     st.warning('Supplier pricing is an internal estimate model, not a live marketplace or binding quotation.')
-    suppliers=list_suppliers(user['id'])
+    suppliers=[] if is_demo else list_suppliers(user['id'])
     m1,m2,m3,m4=st.columns(4)
     m1.metric('Suppliers',len(suppliers)); m2.metric('Projects',len(list_projects(user['id']))); m3.metric('Saved quotes',len(list_quotes(user['id']))); m4.metric('Active analysis','Yes' if st.session_state.analysis else 'No')
     st.markdown('<div class="mf-section">Supplier directory</div>',unsafe_allow_html=True)
     with st.expander('＋ Add supplier',expanded=not bool(suppliers)):
+        if is_demo:
+            st.caption('🔒 Account required to save supplier profiles and quotations.')
         c=st.columns(2)
         name=c[0].text_input('Supplier name',placeholder='Example Manufacturing Co.')
         loc=c[1].text_input('Location',placeholder='Hyderabad, Telangana')
@@ -535,9 +574,10 @@ elif nav=='Suppliers':
         mf=c[2].number_input('Material factor',0.2,5.,1.0,step=0.1)
         lead=c[3].number_input('Lead time (days)',1,365,7,step=1)
         email=st.text_input('Supplier email (optional)')
-        if st.button('Save supplier profile',type='primary'):
+        if st.button('Save supplier profile',type='primary',disabled=is_demo):
             if name.strip():
-                upsert_supplier(user['id'],{'name':name,'location':loc,'processes':procs,'machine_rate':rate,'setup_cost':setup,'material_factor':mf,'lead_days':lead,'email':email})
+                if not is_demo:
+                    upsert_supplier(user['id'],{'name':name,'location':loc,'processes':procs,'machine_rate':rate,'setup_cost':setup,'material_factor':mf,'lead_days':lead,'email':email})
                 st.success('Supplier profile saved.'); st.rerun()
             else: st.error('Supplier name is required.')
     if suppliers:
@@ -557,9 +597,10 @@ elif nav=='Suppliers':
         st.success(f"Lowest modeled unit cost: **₹{best['unit_cost']:,.0f}** from **{best['supplier']}**. Validate with an actual supplier quote.")
         chosen=st.selectbox('Save comparison result for supplier',[r['supplier'] for r in rows])
         qr=next(r for r in rows if r['supplier']==chosen)
-        if st.button('Save selected quote',type='primary'):
+        if st.button('Save selected quote',type='primary',disabled=is_demo):
             sid=next(s['id'] for s in suppliers if s['name']==chosen)
-            save_quote(user['id'],st.session_state.active_project_id, sid,quote_qty,qr['unit_cost'],qr['total_cost'],qr['lead_days'],qr['notes']); st.success('Quote saved to history.'); st.rerun()
+            if not is_demo:
+                save_quote(user['id'],st.session_state.active_project_id, sid,quote_qty,qr['unit_cost'],qr['total_cost'],qr['lead_days'],qr['notes']); st.success('Quote saved to history.'); st.rerun()
     elif not a: st.info('Run a DFM analysis to unlock project-specific quote comparison.')
     qrows=list_quotes(user['id'])
     if qrows:
@@ -569,9 +610,11 @@ elif nav=='Suppliers':
 
 # ---------- Reports & History ----------
 elif nav=='Reports & History':
+    if is_demo:
+        st.info('Saved reports and analysis history require an account. Your current demo result remains available in this session.')
     st.markdown('<div class="mf-page-title"><div><div class="mf-kicker">DOCUMENT CONTROL</div><h2>Reports & History</h2><p>Review, load and export previous engineering assessments.</p></div></div>',unsafe_allow_html=True)
-    rows=list_analyses(user['id'])
-    projects=list_projects(user['id'])
+    rows=[] if is_demo else list_analyses(user['id'])
+    projects=[] if is_demo else list_projects(user['id'])
     r1,r2,r3,r4=st.columns(4)
     r1.metric('Analyses',len(rows)); r2.metric('Projects',len(projects)); r3.metric('Excellent',sum(x['payload'].get('classification')=='Excellent' for x in rows)); r4.metric('High-risk',sum(any(i.get('priority')=='HIGH' for i in x['payload'].get('issues',[])) for x in rows))
     if rows:
@@ -595,6 +638,8 @@ elif nav=='Reports & History':
 
 # ---------- Settings ----------
 elif nav=='Settings':
+    if is_demo:
+        st.info('Demo workspace. Create an account to unlock persistent projects, reports, suppliers and full workspace history.')
     st.markdown('<div class="mf-page-title"><div><div class="mf-kicker">SYSTEM CONFIGURATION</div><h2>Settings</h2><p>Configure AI, email, data storage and workspace preferences.</p></div></div>',unsafe_allow_html=True)
     tab1,tab2,tab3,tab4=st.tabs(['AI','Email','Data & Storage','Security'])
     with tab1:
