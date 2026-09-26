@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+mechforge.db
+*.db
+.streamlit/secrets.toml
+.env
+.venv/
+._mechforge_model*
