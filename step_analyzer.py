@@ -23,10 +23,17 @@ def analyze_cad_file(filename: str, data: bytes):
 
 
 def _analyze_step(path: Path):
-    try:
-        import cadquery as cq
-    except Exception as e:
-        raise RuntimeError('CadQuery is required for STEP parsing. Install cadquery.') from e
+try:
+    import cadquery as cq
+except Exception as e:
+    print(
+        f"MECHFORGE CADQUERY IMPORT ERROR: "
+        f"{type(e).__name__}: {e}",
+        flush=True
+    )
+    raise RuntimeError(
+        f"CadQuery import failed: {type(e).__name__}: {e}"
+    ) from e
     wp=cq.importers.importStep(str(path))
     solids=wp.solids().vals()
     if not solids: raise ValueError('No solid bodies were found in the STEP file.')
